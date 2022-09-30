@@ -214,7 +214,7 @@ namespace VirtualControllerInputManagement
             set => _inputBuffer[33 + Offset] = (byte)((_inputBuffer[33 + Offset] & 0xFC) | (value & 0x3));
         }
 
-        public byte Counter_TouchPadActivityTracker
+        public byte Counter_TouchPadGeneralActivityTracker
         {
             get => _inputBuffer[34 + Offset]; set => _inputBuffer[34 + Offset] = value;
         }
@@ -285,6 +285,11 @@ namespace VirtualControllerInputManagement
                 _inputBuffer[41 + Offset] = (byte)(((value << 4) & 0xf0) | (_inputBuffer[41 + Offset] & 0x0f));
                 _inputBuffer[42 + Offset] = (byte)(value >> 4);
             }
+        }
+
+        public DualShock4Input(int offset)
+        {
+            _offset = offset;
         }
 
     }

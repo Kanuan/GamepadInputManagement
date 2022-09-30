@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -9,13 +10,13 @@ namespace VirtualControllerInputManagement
 {
     public class DualShock4InputManager
     {
-        public DualShock4Input ds4;
+        public DualShock4Input DS4 = new();
 
-              // ----------------------------- Start of Touchpad block --------------
+        // ----------------------------- Start of Touchpad block --------------
 
 
         private bool[] _hasTouchXStateChanged = { false, false };
-        public bool[] HasTouchXStateChanged
+        public bool[] HasTouchXDataChanged
         {
             get => _hasTouchXStateChanged;
             set => _hasTouchXStateChanged = value;
@@ -23,131 +24,164 @@ namespace VirtualControllerInputManagement
 
         private Stopwatch watch = new();
 
-        private long watchTicksCurrent;
-        private long watchTicksPrevious;
+        private int touchPad_TicksSinceLastReport { get; set; }
+
+        private bool isSetInvertTouchData = false;
+        private bool[] hasTouchDataChange = { false, false };
+
+        private byte Counter_TouchPadFingerDown { get; set; }
 
 
-        public DualShock4InputManager()
+
+        public DualShock4InputManager(DualShock4Input inDs4)
         {
-            ds4 = new();
-            watchTicksCurrent = watchTicksPrevious = watch.ElapsedTicks;
+            DS4 = inDs4;
+            DS4 = new();
+            Counter_TouchPadFingerDown = (DS4.Counter_CurrentTouchP0 >= DS4.Counter_CurrentTouchP1) ? DS4.Counter_CurrentTouchP0 : DS4.Counter_CurrentTouchP1;
         }
 
 
-        // ----------------------------- End of Touchpad block --------------
         public void UpdateTouch(bool t0InContact, ushort t0PosX, ushort t0PosY, bool t1InContact, ushort t1PosX, ushort t1PosY)
         {
-            // This checks for an impossible situation in which only a "touch 1" data arrives when no fingers are in the touchpad
-            // If this happens, then touch 1 data is supposed to be touch 0
-            // This also considers that touch 1 was previously present as is just being updated while touch 0 is absent
-            if ((!t0InContact && t1InContact) && (!ds4.isCurrentTouchP0InContact && !ds4.isCurrentTouchP1InContact))
+            if (isSetInvertTouchData && !t0InContact && !t1InContact)
+            {
+                isSetInvertTouchData = false;
+            }
+
+            // Swap touch data if ONLY TouchP1 is in contact currently but neither TouchP0 or TouchP1 was in contact in the previous report
+            // Reason: impossible for no fingers to be in contact then the 1st fingerto get in contact to be considered "2nd finger"
+            isSetInvertTouchData = (!t0InContact & t1InContact) && (!DS4.isCurrentTouchP0InContact & !DS4.isCurrentTouchP1InContact);
+            if (isSetInvertTouchData)
             {
                 (t0InContact, t1InContact) = (t1InContact, t0InContact);
                 (t0PosX, t1PosX) = (t1PosX, t0PosX);
                 (t0PosY, t1PosY) = (t1PosY, t0PosY);
             }
 
+            // Organize data in arrays
             bool[] tXInContact = new bool[] { t0InContact, t1InContact };
             ushort[] tXPosX = new ushort[] { t0PosX, t1PosX };
             ushort[] tXPosY = new ushort[] { t0PosY, t1PosY };
 
-
+            // Process each TouchPX data individually
+            // PosX/Y must only be updated if finger is in contact
+            // Counter_TouchPadFingerDown must be incremented only once when touching the TP, but both fingers incremement the same counter
+            // If the finger is in contact and there was ANY change in data regarding the previous input report, then set the "DataChanged" flag
             for (int i = 0; i < 2; i++)
             {
-                if(tXInContact[i])
+                if (tXInContact[i]) // Check if finger is touching
                 {
-                    if (!getTouchPXInContact(i) || tXPosX[i] != getTouchPXPosX(i) || tXPosY[i] != getTouchPXPosY(i)) // Check if anything changed
+                    if (HasTouchXDataChanged[i] = checkIfTouchPXDataChanged(i, tXInContact[i], tXPosX[i], tXPosY[i]))
                     {
-                        if (!getTouchPXInContact(i))  // update counter if finger was NOT touching the pad in previous inputRep
-                            increaseTouchPXCounter(i);
-
-                        setTouchPXPosX(i, tXPosX[i]); // Only update positions if finger is touching
+                        setTouchPXPosX(i, tXPosX[i]);
                         setTouchPXPosY(i, tXPosY[i]);
-
-                        HasTouchXStateChanged[i] = true;
+                        if (!getTouchPXInContact(i)) // If it's the starting finger contact, increase counter used for both fingers but only sets current finger counter
+                        {
+                            Counter_TouchPadFingerDown++;
+                            setTouchPXCounter(i, Counter_TouchPadFingerDown);
+                        }
                     }
                 }
-                else
+                else  // Also set the "DataChanged" flag when finger is no longer in touch
                 {
-                    if (getTouchPXInContact(i)) // Check if finger is touching now but wasn't before
+                    if (getTouchPXInContact(i)) // Check if finger was in contact before
                     {
-                        increaseTouchPXCounter(i);
-                        HasTouchXStateChanged[i] = true;
+                        HasTouchXDataChanged[i] = true;
                     }
                 }
                 setTouchPXInContact(i, tXInContact[i]);
             }
 
-
-            byte tempTicks = unchecked((byte)(watch.ElapsedMicroSeconds() / 500));
-            if (tempTicks > 127) tempTicks = (byte)127;
-
-            if (HasTouchXStateChanged[0] || HasTouchXStateChanged[1])
+            // If there was touchpad activity, increase the general activity counter by the delta between current and previous "touchpad clock ticks"
+            if (HasTouchXDataChanged[0] || HasTouchXDataChanged[1])
             {
-                ds4.Counter_TouchPadActivityTracker += tempTicks;
-                Console.Write($"\nTouchpad activity counter delta from last inpRep:");
-                Console.Write($"\n{tempTicks} (emulated)");
+                DS4.Counter_TouchPadGeneralActivityTracker += getTouchPadTicksDelta();
             }
 
-
-
-            HasTouchXStateChanged[0] = false;
-            HasTouchXStateChanged[1] = false;
-
-            ds4.Counter_InputRepTracker++; ;
+            // Prepare for next report
+            HasTouchXDataChanged[0] = false;
+            HasTouchXDataChanged[1] = false;
             watch.Restart();
+
+            DS4.Counter_InputRepTracker++; // Not part of the touchpad stuff. Move it from here later
+        }
+
+        /// <summary>
+        /// Compares touch data received with the one already set to check if there is a difference
+        /// </summary>
+        /// <param name="i">Touch Data group index (0 = TouchP0, 1 = TouchP1)</param>
+        /// <param name="tInContact">True if finger is in contact, false if not</param>
+        /// <param name="tXPosX">Touch position in the Axis X</param>
+        /// <param name="tXPosY">Touch position in the Axis Y</param>
+        /// <returns>True if any of the values are different, false if they are equal</returns>
+        private bool checkIfTouchPXDataChanged(int i, bool tInContact, ushort tXPosX, ushort tXPosY)
+        {
+            if (tInContact != getTouchPXInContact(i) || tXPosX != getTouchPXPosX(i) || tXPosY != getTouchPXPosY(i))
+                return true;
+            return false;
+        }
+
+        private byte getTouchPadTicksDelta()
+        { 
+            int ticksDelta = unchecked((int)(watch.ElapsedMicroSeconds() / 500)); // internal TP Counter seems to tick every 500 microseconds of touchpad activity
+            if (ticksDelta > 127) ticksDelta = (byte)127;
+            return (byte)ticksDelta;
         }
 
         private bool getTouchPXInContact(int i)
         {
-            if (i == 0) return ds4.isCurrentTouchP0InContact;
-            if (i == 1) return ds4.isCurrentTouchP1InContact;
-            return false;
+            if (i == 0) return DS4.isCurrentTouchP0InContact;
+            if (i == 1) return DS4.isCurrentTouchP1InContact;
+            throw new IndexOutOfRangeException();
         }
 
         private void setTouchPXInContact(int i, bool set)
         {
-            if (i == 0) ds4.isCurrentTouchP0InContact = set;
-            if (i == 1) ds4.isCurrentTouchP1InContact = set; 
+            if (i == 0) DS4.isCurrentTouchP0InContact = set;
+            if (i == 1) DS4.isCurrentTouchP1InContact = set;
+            throw new IndexOutOfRangeException();
         }
 
         private byte getTouchPXCounter(int i)
         {
-            if (i == 0) return ds4.Counter_CurrentTouchP0;
-            if (i == 1) return ds4.Counter_CurrentTouchP1;
-            return 0;
+            if (i == 0) return DS4.Counter_CurrentTouchP0;
+            if (i == 1) return DS4.Counter_CurrentTouchP1;
+            throw new IndexOutOfRangeException();
         }
 
-        private void increaseTouchPXCounter(int i)
+        private void setTouchPXCounter(int i, int value)
         {
-            if (i == 0) ds4.Counter_CurrentTouchP0++;
-            if (i == 1) ds4.Counter_CurrentTouchP1++;
+            if (i == 0) DS4.Counter_CurrentTouchP0 = (byte)value;
+            if (i == 1) DS4.Counter_CurrentTouchP1 = (byte)value;
+            throw new IndexOutOfRangeException();
         }
 
         private ushort getTouchPXPosX(int i)
         {
-            if (i == 0) return ds4.Axis_CurrentTouchP0X;
-            if (i == 1) return ds4.Axis_CurrentTouchP1X;
-            return 0;
+            if (i == 0) return DS4.Axis_CurrentTouchP0X;
+            if (i == 1) return DS4.Axis_CurrentTouchP1X;
+            throw new IndexOutOfRangeException();
         }
 
         private void setTouchPXPosX(int i, ushort pos)
         {
-            if (i == 0) ds4.Axis_CurrentTouchP0X = pos;
-            if (i == 1) ds4.Axis_CurrentTouchP1X = pos;
+            if (i == 0) DS4.Axis_CurrentTouchP0X = pos;
+            if (i == 1) DS4.Axis_CurrentTouchP1X = pos;
+            throw new IndexOutOfRangeException();
         }
 
         private ushort getTouchPXPosY(int i)
         {
-            if (i == 0) return ds4.Axis_CurrentTouchP0Y;
-            if (i == 1) return ds4.Axis_CurrentTouchP1Y;
-            return 0;
+            if (i == 0) return DS4.Axis_CurrentTouchP0Y;
+            if (i == 1) return DS4.Axis_CurrentTouchP1Y;
+            throw new IndexOutOfRangeException();
         }
 
         private void setTouchPXPosY(int i, ushort pos)
         {
-            if (i == 0) ds4.Axis_CurrentTouchP0Y = pos;
-            if (i == 1) ds4.Axis_CurrentTouchP1Y = pos;
+            if (i == 0) DS4.Axis_CurrentTouchP0Y = pos;
+            if (i == 1) DS4.Axis_CurrentTouchP1Y = pos;
+            throw new IndexOutOfRangeException();
         }
     }
 }

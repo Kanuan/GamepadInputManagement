@@ -33,8 +33,6 @@ namespace VirtualControllerInputManagement
                 var buffer = new byte[pipe.MaximumPacketSize];
                 int read;
 
-                DualShock4InputManager vds4 = new();
-
                 bool[,] tXdown = new bool[2,2];
                 byte[,] tXPosX = new byte[2,2];
                 byte[,] tXPosY = new byte[2,2];
@@ -56,10 +54,13 @@ namespace VirtualControllerInputManagement
                 double counterDelta = 1;
                 double timeBetweenCounterTicks = 1;
 
-                DualShock4InputManager currentDS4Inp = new();
-                DualShock4InputManager previousDS4Inp = new();
-                DualShock4Input ds4Buffer = new();
-                ds4Buffer.InputBuffer = buffer;
+                DualShock4InputManager currentVirtualDS4Manager = new(new DualShock4Input());
+                DualShock4Input currentVirtualDS4Inp = new();
+                DualShock4Input previousVirtualDS4Inp = new();
+
+                DualShock4Input currentRealDS4Inp = new();
+                DualShock4Input previousRealDS4Inp = new();
+                currentRealDS4Inp.InputBuffer = buffer;
 
                 Stopwatch stopwatch = new();
 
@@ -69,7 +70,10 @@ namespace VirtualControllerInputManagement
                 {
                     if (notDone)
                     {
-                        Array.Copy(buffer, currentDS4Inp.ds4.InputBuffer, 64);
+                        Array.Copy(buffer, currentVirtualDS4Inp.InputBuffer, 64);
+                        currentVirtualDS4Manager = new(currentVirtualDS4Inp);
+                        Array.Copy(buffer, previousRealDS4Inp.InputBuffer, 64);
+                        Array.Copy(buffer, previousVirtualDS4Inp.InputBuffer, 64);
                         notDone = false;
                         stopwatch.Start();
                     }
@@ -77,16 +81,21 @@ namespace VirtualControllerInputManagement
 
                     
 
-
-                    currentDS4Inp.UpdateTouch(
-                        ds4Buffer.isCurrentTouchP0InContact, ds4Buffer.Axis_CurrentTouchP0X, ds4Buffer.Axis_CurrentTouchP0Y,
-                        ds4Buffer.isCurrentTouchP1InContact, ds4Buffer.Axis_CurrentTouchP1X, ds4Buffer.Axis_CurrentTouchP1Y
+                    
+                    currentVirtualDS4Manager.UpdateTouch(
+                        currentRealDS4Inp.isCurrentTouchP0InContact, currentRealDS4Inp.Axis_CurrentTouchP0X, currentRealDS4Inp.Axis_CurrentTouchP0Y,
+                        currentRealDS4Inp.isCurrentTouchP1InContact, currentRealDS4Inp.Axis_CurrentTouchP1X, currentRealDS4Inp.Axis_CurrentTouchP1Y
                         );
+                    Console.SetCursorPosition(0, 0);
+                    Console.Write($"\r[Emul] GenCounter: {currentVirtualDS4Inp.Counter_TouchPadGeneralActivityTracker} | T0: Counter: {currentVirtualDS4Inp.Counter_CurrentTouchP0},  InTouch: {currentVirtualDS4Inp.isCurrentTouchP0InContact},  X: {currentVirtualDS4Inp.Axis_CurrentTouchP0X} Y:{currentVirtualDS4Inp.Axis_CurrentTouchP0Y}");
+                    Console.Write($" ||| T1: Counter: {currentVirtualDS4Inp.Counter_CurrentTouchP1},  InTouch: {currentVirtualDS4Inp.isCurrentTouchP1InContact},  X: {currentVirtualDS4Inp.Axis_CurrentTouchP1X} Y:{currentVirtualDS4Inp.Axis_CurrentTouchP1Y}   ");
+                    Console.Write($"\r\n[Real] GenCounter: {currentRealDS4Inp.Counter_TouchPadGeneralActivityTracker} |  T0: Counter: {currentRealDS4Inp.Counter_CurrentTouchP0},  InTouch: {currentRealDS4Inp.isCurrentTouchP0InContact},  X: {currentRealDS4Inp.Axis_CurrentTouchP0X} Y:{currentRealDS4Inp.Axis_CurrentTouchP0Y}");
+                    Console.Write($" ||| T1: Counter: {currentRealDS4Inp.Counter_CurrentTouchP1},  InTouch: {currentRealDS4Inp.isCurrentTouchP1InContact},  X: {currentRealDS4Inp.Axis_CurrentTouchP1X} Y:{currentRealDS4Inp.Axis_CurrentTouchP1Y}   ");
+                    
 
-                    // Console.Write($"\r\nT0: {currentDS4Inp.ds4.isCurrentTouchP0InContact} // RealT: {ds4Buffer.isCurrentTouchP0InContact} // X: {currentDS4Inp.ds4.Axis_CurrentTouchP0X} Y:{currentDS4Inp.ds4.Axis_CurrentTouchP0Y}");
 
                     /*
-                    if (!currentDS4Inp.ds4.isCurrentTouchP0InContact && previousDS4Inp.ds4.isCurrentTouchP0InContact)
+                    if (!currentRealDS4Inp.isCurrentTouchP0InContact && previousRealDS4Inp.ds4.isCurrentTouchP0InContact)
                     {
                         Console.Write($"\r\nDetected finger 1 was lifted");
                         if (currentDS4Inp.ds4.Counter_TouchPadActivityTracker != previousDS4Inp.ds4.Counter_TouchPadActivityTracker)
@@ -99,7 +108,8 @@ namespace VirtualControllerInputManagement
                     }
                     */
 
-                    byte difTActivity = (byte)( ds4Buffer.Counter_TouchPadActivityTracker - previousDS4Inp.ds4.Counter_TouchPadActivityTracker );
+                    /*
+                    byte difTActivity = (byte)( currentRealDS4Inp.Counter_TouchPadGeneralActivityTracker - previousRealDS4Inp.Counter_TouchPadGeneralActivityTracker );
 
                     if(difTActivity > 0)
                     if ( ( (int)(stopwatch.ElapsedMicroSeconds() / difTActivity)) > 0)
@@ -111,7 +121,7 @@ namespace VirtualControllerInputManagement
                         autoCount++;
                     }
                             stopwatch.Restart();
-
+                    */
 
 
 
@@ -137,9 +147,10 @@ namespace VirtualControllerInputManagement
                     systemTimeInNS[1] = systemTimeInNS[0];
                     RealGenCounter[1] = RealGenCounter[0];
 
-                    Array.Copy(buffer, previousDS4Inp.ds4.InputBuffer, 64);
+                    Array.Copy(currentRealDS4Inp.InputBuffer, previousRealDS4Inp.InputBuffer, 64);
+                    Array.Copy(currentVirtualDS4Inp.InputBuffer, previousVirtualDS4Inp.InputBuffer, 64);
 
-                    
+
 
                     if (autoCount > 1000) break;
 
